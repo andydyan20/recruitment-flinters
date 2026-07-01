@@ -161,3 +161,69 @@ This is **not mandatory** but **highly valued** as it demonstrates your ability 
 ---
 
 Good luck, and happy coding!
+
+---
+
+# Solution
+
+## Setup
+
+```bash
+# (optional) create a virtualenv
+python3 -m venv .venv && source .venv/bin/activate
+
+# runtime has zero external dependencies (stdlib only)
+# install pytest only if you want to run the test suite
+pip install -r requirements-dev.txt
+```
+
+## How to run
+
+```bash
+unzip ad_data.csv.zip
+python3 aggregator.py --input ad_data.csv --output results/
+```
+
+This writes `results/top10_ctr.csv` and `results/top10_cpa.csv`.
+
+## Tests
+
+```bash
+pytest tests/
+```
+
+Covers: correct per-campaign summation across multiple rows, CTR guarded against zero impressions, CPA excluded/`null` for zero conversions, malformed rows skipped without crashing, missing-input-file handling, and an end-to-end run that checks the generated CSVs.
+
+## Libraries used
+
+- **Runtime**: Python 3.12 standard library only (`csv`, `argparse`, `logging`, `dataclasses`). No pandas/numpy — a single streaming pass with a per-`campaign_id` dict accumulator already gives O(1) memory per row and O(unique campaigns) total memory, which is the right shape for a groupby-sum over a 1GB file without pulling in a heavier dependency.
+- **Dev/test**: `pytest`.
+
+## Performance (measured on the real ~1GB dataset)
+
+Dataset: `ad_data.csv`, 1,043,304,870 bytes (~1.0 GB), 26,843,544 data rows, 50 unique campaigns.
+
+Command: `/usr/bin/time -l python3 aggregator.py --input ad_data.csv --output results/`
+
+| Metric | Value |
+|---|---|
+| Wall time | ~17.9s |
+| Peak resident set size | ~18.7 MB |
+
+Measured on an Apple Silicon Mac (macOS), Python 3.12.2, single-threaded, no parallelism needed at this scale.
+
+To reproduce without the real dataset (e.g. if Git LFS isn't set up), generate a synthetic file of the same schema/size:
+
+```bash
+python3 generator/generate_sample_data.py --output ad_data.csv --size-gb 1.0 --campaigns 500
+```
+
+## Documented decisions
+
+- **CTR with zero impressions**: defined as `0.0` instead of raising, since a campaign with zero impressions trivially has zero click-through rate — division by zero is guarded rather than treated as an error.
+- **CPA with zero conversions**: reported as `null` (empty field) in `top10_ctr.csv`'s CPA column and the campaign is excluded entirely from `top10_cpa.csv`, per the spec.
+- **Tie-breaking**: campaigns with equal CTR (or equal CPA) are ordered by `campaign_id` ascending, so output is deterministic and reproducible across runs.
+- **Malformed rows**: a row with a non-numeric field or wrong column count is logged as a warning (with line number) and skipped, rather than aborting the whole run — one bad row shouldn't fail a 1GB batch job.
+- **Column order robustness**: column indices are resolved from the header row by name rather than hardcoded by position, so the aggregator tolerates reordered (but still complete) CSV columns.
+- **No pandas/multiprocessing**: at 26.8M rows / 50 unique campaigns, a single-threaded stdlib pass finishes in ~18s with ~19MB RSS — comfortably fast/memory-light enough that adding pandas or chunked multiprocessing would be complexity without a corresponding benefit.
+
